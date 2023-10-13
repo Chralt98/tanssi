@@ -28,6 +28,9 @@ use sp_version::NativeVersion;
 #[cfg(any(feature = "std", test))]
 pub use sp_runtime::BuildStorage;
 
+#[cfg(feature = "standalone")]
+use sp_consensus_aura::sr25519::AuthorityId as AuraId;
+
 pub use sp_runtime::{MultiAddress, Perbill, Permill};
 use {
     cumulus_pallet_parachain_system::RelayNumberStrictlyIncreases,
@@ -184,8 +187,17 @@ pub mod opaque {
     pub type BlockId = generic::BlockId<Block>;
 }
 
+#[cfg(not(feature = "standalone"))]
 impl_opaque_keys! {
-    pub struct SessionKeys { }
+    pub struct SessionKeys {}
+}
+
+#[cfg(feature = "standalone")]
+impl_opaque_keys! {
+    pub struct SessionKeys {
+        pub aura: Aura,
+        pub grandpa: Grandpa,
+    }
 }
 
 #[sp_version::runtime_version]
@@ -332,7 +344,10 @@ impl frame_system::Config for Runtime {
     /// This is used as an identifier of the chain. 42 is the generic substrate prefix.
     type SS58Prefix = SS58Prefix;
     /// The action to take on a Runtime Upgrade
+    #[cfg(not(feature = "standalone"))]
     type OnSetCode = cumulus_pallet_parachain_system::ParachainSetCode<Self>;
+    #[cfg(feature = "standalone")]
+    type OnSetCode = ();
     type MaxConsumers = frame_support::traits::ConstU32<16>;
 }
 
@@ -384,11 +399,13 @@ impl pallet_transaction_payment::Config for Runtime {
     type FeeMultiplierUpdate = ConstFeeMultiplier<FeeMultiplier>;
 }
 
+#[cfg(not(feature = "standalone"))]
 parameter_types! {
     pub const ReservedXcmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT.saturating_div(4);
     pub const ReservedDmpWeight: Weight = MAXIMUM_BLOCK_WEIGHT.saturating_div(4);
 }
 
+#[cfg(not(feature = "standalone"))]
 impl cumulus_pallet_parachain_system::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type OnSystemEvent = ();
@@ -401,6 +418,7 @@ impl cumulus_pallet_parachain_system::Config for Runtime {
     type CheckAssociatedRelayNumber = RelayNumberStrictlyIncreases;
 }
 
+#[cfg(not(feature = "standalone"))]
 impl parachain_info::Config for Runtime {}
 
 parameter_types! {
@@ -502,7 +520,9 @@ impl pallet_proxy::Config for Runtime {
     type WeightInfo = pallet_proxy::weights::SubstrateWeight<Runtime>;
 }
 
+#[cfg(not(feature = "standalone"))]
 pub struct XcmExecutionManager;
+#[cfg(not(feature = "standalone"))]
 impl xcm_primitives::PauseXcmExecution for XcmExecutionManager {
     fn suspend_xcm_execution() -> DispatchResult {
         XcmpQueue::suspend_xcm_execution(RuntimeOrigin::root())
@@ -636,6 +656,7 @@ impl pallet_maintenance_mode::Config for Runtime {
     type MaintenanceExecutiveHooks = MaintenanceHooks;
 }
 
+#[cfg(not(feature = "standalone"))]
 impl pallet_cc_authorities_noting::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type SelfParaId = parachain_info::Pallet<Runtime>;
@@ -644,6 +665,7 @@ impl pallet_cc_authorities_noting::Config for Runtime {
     type WeightInfo = pallet_cc_authorities_noting::weights::SubstrateWeight<Runtime>;
 }
 
+#[cfg(not(feature = "standalone"))]
 impl pallet_author_inherent::Config for Runtime {
     type AuthorId = NimbusId;
     type AccountLookup = tp_consensus::NimbusLookUp;
@@ -652,12 +674,67 @@ impl pallet_author_inherent::Config for Runtime {
     type WeightInfo = pallet_author_inherent::weights::SubstrateWeight<Runtime>;
 }
 
+#[cfg(feature = "standalone")]
+impl pallet_aura::Config for Runtime {
+	type AuthorityId = AuraId;
+	type DisabledValidators = ();
+	type MaxAuthorities = ConstU32<32>;
+	type AllowMultipleBlocksPerSlot = ConstBool<false>;
+}
+
+#[cfg(feature = "standalone")]
+impl pallet_grandpa::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+
+	type WeightInfo = ();
+	type MaxAuthorities = ConstU32<32>;
+	type MaxSetIdSessionEntries = ConstU64<0>;
+
+	type KeyOwnerProof = sp_core::Void;
+	type EquivocationReportSystem = ();
+}
+
+#[cfg(feature = "standalone")]
+macro_rules! include_authoring_pallets {
+    () => {
+        Aura: pallet_aura = 60,
+		Grandpa: pallet_grandpa = 61,
+    };
+}
+
+#[cfg(not(feature = "standalone"))]
+macro_rules! include_authoring_pallets {
+    () => {
+        // ContainerChain Author Verification
+        AuthoritiesNoting: pallet_cc_authorities_noting = 50,
+        AuthorInherent: pallet_author_inherent = 51,
+    };
+}
+
+#[cfg(feature = "standalone")]
+macro_rules! include_xcm_pallets {
+    () => {};
+}
+
+#[cfg(not(feature = "standalone"))]
+macro_rules! include_xcm_pallets {
+    () => {
+        // XCM
+        XcmpQueue: cumulus_pallet_xcmp_queue::{Pallet, Storage, Event<T>} = 70,
+        CumulusXcm: cumulus_pallet_xcm::{Pallet, Event<T>, Origin} = 71,
+        DmpQueue: cumulus_pallet_dmp_queue::{Pallet, Call, Storage, Event<T>} = 72,
+        PolkadotXcm: pallet_xcm::{Pallet, Call, Storage, Event<T>, Origin, Config<T>} = 73,
+    };
+}
+
+
 // Create the runtime by composing the FRAME pallets that were previously configured.
 construct_runtime!(
     pub enum Runtime
     {
         // System support stuff.
         System: frame_system = 0,
+        #[cfg(not(feature = "standalone"))]
         ParachainSystem: cumulus_pallet_parachain_system = 1,
         Timestamp: pallet_timestamp = 2,
         ParachainInfo: parachain_info = 3,
@@ -671,15 +748,9 @@ construct_runtime!(
         Balances: pallet_balances = 10,
         TransactionPayment: pallet_transaction_payment = 11,
 
-        // ContainerChain Author Verification
-        AuthoritiesNoting: pallet_cc_authorities_noting = 50,
-        AuthorInherent: pallet_author_inherent = 51,
+        include_authoring_pallets!();
 
-        // XCM
-        XcmpQueue: cumulus_pallet_xcmp_queue::{Pallet, Storage, Event<T>} = 70,
-        CumulusXcm: cumulus_pallet_xcm::{Pallet, Event<T>, Origin} = 71,
-        DmpQueue: cumulus_pallet_dmp_queue::{Pallet, Call, Storage, Event<T>} = 72,
-        PolkadotXcm: pallet_xcm::{Pallet, Call, Storage, Event<T>, Origin, Config<T>} = 73,
+        include_xcm_pallets!();
 
     }
 );
@@ -734,6 +805,48 @@ impl_runtime_apis! {
         }
     }
 
+    #[cfg(feature = "standalone")]
+    impl sp_consensus_aura::AuraApi<Block, AuraId> for Runtime {
+		fn slot_duration() -> sp_consensus_aura::SlotDuration {
+			sp_consensus_aura::SlotDuration::from_millis(Aura::slot_duration())
+		}
+
+		fn authorities() -> Vec<AuraId> {
+			Aura::authorities().into_inner()
+		}
+	}
+
+    #[cfg(feature = "standalone")]
+    impl sp_consensus_grandpa::GrandpaApi<Block> for Runtime {
+		fn grandpa_authorities() -> sp_consensus_grandpa::AuthorityList {
+			Grandpa::grandpa_authorities()
+		}
+
+		fn current_set_id() -> sp_consensus_grandpa::SetId {
+			Grandpa::current_set_id()
+		}
+
+		fn submit_report_equivocation_unsigned_extrinsic(
+			_equivocation_proof: sp_consensus_grandpa::EquivocationProof<
+				<Block as BlockT>::Hash,
+				NumberFor<Block>,
+			>,
+			_key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
+		fn generate_key_ownership_proof(
+			_set_id: sp_consensus_grandpa::SetId,
+			_authority_id: GrandpaId,
+		) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
+			// NOTE: this is the only implementation possible since we've
+			// defined our key owner proof type as a bottom type (i.e. a type
+			// with no values).
+			None
+		}
+	}
+
     impl sp_transaction_pool::runtime_api::TaggedTransactionQueue<Block> for Runtime {
         fn validate_transaction(
             source: TransactionSource,
@@ -768,6 +881,7 @@ impl_runtime_apis! {
         }
     }
 
+    #[cfg(not(feature = "standalone"))]
     impl cumulus_primitives_core::CollectCollationInfo<Block> for Runtime {
         fn collect_collation_info(header: &<Block as BlockT>::Header) -> cumulus_primitives_core::CollationInfo {
             ParachainSystem::collect_collation_info(header)
@@ -785,11 +899,13 @@ impl_runtime_apis! {
             use frame_benchmarking::{list_benchmark, BenchmarkList, Benchmarking};
             use frame_support::traits::StorageInfoTrait;
             use frame_system_benchmarking::Pallet as SystemBench;
+            #[cfg(not(feature = "standalone"))]
             use pallet_cc_authorities_noting::Pallet as PalletAuthoritiesNotingBench;
 
             let mut list = Vec::<BenchmarkList>::new();
 
             list_benchmark!(list, extra, frame_system, SystemBench::<Runtime>);
+            #[cfg(not(feature = "standalone"))]
             list_benchmark!(
                 list,
                 extra,
@@ -810,6 +926,7 @@ impl_runtime_apis! {
 
             use frame_system_benchmarking::Pallet as SystemBench;
             impl frame_system_benchmarking::Config for Runtime {}
+            #[cfg(not(feature = "standalone"))]
             use pallet_cc_authorities_noting::Pallet as PalletAuthoritiesNotingBench;
 
             let whitelist: Vec<TrackedStorageKey> = vec![
@@ -843,6 +960,7 @@ impl_runtime_apis! {
             let params = (&config, &whitelist);
 
             add_benchmark!(params, batches, frame_system, SystemBench::<Runtime>);
+            #[cfg(not(feature = "standalone"))]
             add_benchmark!(
                 params,
                 batches,
